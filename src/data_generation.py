@@ -28,7 +28,7 @@ from src.fcw import (
     apply_warning_latency,
     determine_warning_trigger,
 )
-
+from src.aeb import determine_braking_trigger
 
 # ---------------------------------------------------------------------
 # Constants
@@ -1011,5 +1011,27 @@ def generate_scenario_telemetry(
     )
 
     telemetry["warning_triggered"] = warning_triggered
+
+        # -------------------------------------------------------------
+    # 13. Instantaneous AEB decision
+    # -------------------------------------------------------------
+
+    brake_triggered = np.array(
+        [
+            determine_braking_trigger(
+                pedestrian_detected=detected,
+                pedestrian_in_path=in_path,
+                ttc_seconds=ttc,
+            )
+            for detected, in_path, ttc in zip(
+                pedestrian_detected,
+                pedestrian_in_path,
+                ttc_seconds,
+            )
+        ],
+        dtype=bool,
+    )
+
+    telemetry["brake_triggered"] = brake_triggered
 
     return telemetry
