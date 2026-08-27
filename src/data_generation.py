@@ -980,6 +980,9 @@ def generate_scenario_telemetry(
     pedestrian_in_path = (
         np.abs(lateral_position) <= 1.0
     )
+
+    telemetry["pedestrian_in_path"] = pedestrian_in_path
+    
         # -------------------------------------------------------------
     # 11. Instantaneous FCW decision
     # -------------------------------------------------------------

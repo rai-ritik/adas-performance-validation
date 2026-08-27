@@ -63,7 +63,9 @@ def calculate_scenario_kpis(
     # 2. Scenario identification
     # -------------------------------------------------------------
 
-    scenario_id = str(telemetry["scenario_id"].iloc[0])
+    scenario_id = str(
+        telemetry["scenario_id"].iloc[0]
+    )
 
     # -------------------------------------------------------------
     # 3. Basic scenario KPIs
@@ -71,7 +73,9 @@ def calculate_scenario_kpis(
 
     min_ttc = telemetry["ttc_seconds"].min()
 
-    detection_rate = telemetry["pedestrian_detected"].mean()
+    detection_rate = telemetry[
+        "pedestrian_detected"
+    ].mean()
 
     warning_count = int(
         telemetry["warning_triggered"].sum()
@@ -86,11 +90,15 @@ def calculate_scenario_kpis(
     # -------------------------------------------------------------
 
     gt_warning_events = int(
-        telemetry["ground_truth_warning_required"].sum()
+        telemetry[
+            "ground_truth_warning_required"
+        ].sum()
     )
 
     gt_braking_events = int(
-        telemetry["ground_truth_braking_required"].sum()
+        telemetry[
+            "ground_truth_braking_required"
+        ].sum()
     )
 
     fcw_exercised = gt_warning_events > 0
@@ -101,11 +109,43 @@ def calculate_scenario_kpis(
     # 5. FCW validation
     # -------------------------------------------------------------
 
+    ground_truth_fcw = telemetry[
+        "ground_truth_warning_required"
+    ].to_numpy(dtype=bool)
+
+    predicted_fcw = telemetry[
+        "warning_triggered"
+    ].to_numpy(dtype=bool)
+
+    fcw_true_positive = int(
+        np.sum(
+            ground_truth_fcw & predicted_fcw
+        )
+    )
+
+    fcw_false_positive = int(
+        np.sum(
+            ~ground_truth_fcw & predicted_fcw
+        )
+    )
+
+    fcw_false_negative = int(
+        np.sum(
+            ground_truth_fcw & ~predicted_fcw
+        )
+    )
+
+    fcw_true_negative = int(
+        np.sum(
+            ~ground_truth_fcw & ~predicted_fcw
+        )
+    )
+
     if fcw_exercised:
 
         fcw_metrics = calculate_binary_metrics(
-            telemetry["ground_truth_warning_required"].to_numpy(),
-            telemetry["warning_triggered"].to_numpy(),
+            ground_truth_fcw,
+            predicted_fcw,
         )
 
         fcw_precision = fcw_metrics["precision"]
@@ -130,20 +170,28 @@ def calculate_scenario_kpis(
         "brake_triggered"
     ].to_numpy(dtype=bool)
 
-    true_positive = int(
-        np.sum(ground_truth_aeb & predicted_aeb)
+    aeb_true_positive = int(
+        np.sum(
+            ground_truth_aeb & predicted_aeb
+        )
     )
 
-    false_positive = int(
-        np.sum(~ground_truth_aeb & predicted_aeb)
+    aeb_false_positive = int(
+        np.sum(
+            ~ground_truth_aeb & predicted_aeb
+        )
     )
 
-    false_negative = int(
-        np.sum(ground_truth_aeb & ~predicted_aeb)
+    aeb_false_negative = int(
+        np.sum(
+            ground_truth_aeb & ~predicted_aeb
+        )
     )
 
-    true_negative = int(
-        np.sum(~ground_truth_aeb & ~predicted_aeb)
+    aeb_true_negative = int(
+        np.sum(
+            ~ground_truth_aeb & ~predicted_aeb
+        )
     )
 
     if aeb_exercised:
@@ -164,39 +212,109 @@ def calculate_scenario_kpis(
         aeb_f1 = np.nan
 
     # -------------------------------------------------------------
-    # 7. Return KPI summary
+    # 7. Timing KPIs
+    # -------------------------------------------------------------
+
+    fcw_indices = np.flatnonzero(
+        telemetry[
+            "warning_triggered"
+        ].to_numpy(dtype=bool)
+    )
+
+    aeb_indices = np.flatnonzero(
+        telemetry[
+            "brake_triggered"
+        ].to_numpy(dtype=bool)
+    )
+
+    # First FCW TTC
+    if len(fcw_indices) > 0:
+
+        first_fcw_index = fcw_indices[0]
+
+        first_fcw_ttc = telemetry.iloc[
+            first_fcw_index
+        ]["ttc_seconds"]
+
+    else:
+
+        first_fcw_ttc = np.nan
+
+    # First AEB TTC
+    if len(aeb_indices) > 0:
+
+        first_aeb_index = aeb_indices[0]
+
+        first_aeb_ttc = telemetry.iloc[
+            first_aeb_index
+        ]["ttc_seconds"]
+
+    else:
+
+        first_aeb_ttc = np.nan
+
+    # -------------------------------------------------------------
+    # 8. Return KPI summary
     # -------------------------------------------------------------
 
     return {
+        # Scenario
         "scenario_id": scenario_id,
 
+        # Basic metrics
         "min_ttc_s": (
             float(min_ttc)
             if np.isfinite(min_ttc)
             else np.nan
         ),
 
-        "detection_rate": float(detection_rate),
+        "detection_rate": float(
+            detection_rate
+        ),
 
+        # Ground-truth exposure
         "gt_warning_events": gt_warning_events,
         "gt_braking_events": gt_braking_events,
 
         "fcw_exercised": fcw_exercised,
         "aeb_exercised": aeb_exercised,
 
+        # ADAS output counts
         "warning_count": warning_count,
         "brake_count": brake_count,
 
-        "aeb_tp": true_positive,
-        "aeb_tn": true_negative,
-        "aeb_fp": false_positive,
-        "aeb_fn": false_negative,
+        # FCW confusion matrix
+        "fcw_tp": fcw_true_positive,
+        "fcw_tn": fcw_true_negative,
+        "fcw_fp": fcw_false_positive,
+        "fcw_fn": fcw_false_negative,
 
+        # FCW metrics
         "fcw_precision": fcw_precision,
         "fcw_recall": fcw_recall,
         "fcw_f1": fcw_f1,
 
+        # AEB confusion matrix
+        "aeb_tp": aeb_true_positive,
+        "aeb_tn": aeb_true_negative,
+        "aeb_fp": aeb_false_positive,
+        "aeb_fn": aeb_false_negative,
+
+        # AEB metrics
         "aeb_precision": aeb_precision,
         "aeb_recall": aeb_recall,
         "aeb_f1": aeb_f1,
+
+        # Timing
+        "first_fcw_ttc_s": (
+            float(first_fcw_ttc)
+            if np.isfinite(first_fcw_ttc)
+            else np.nan
+        ),
+
+        "first_aeb_ttc_s": (
+            float(first_aeb_ttc)
+            if np.isfinite(first_aeb_ttc)
+            else np.nan
+        ),
     }
