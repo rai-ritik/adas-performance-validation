@@ -23,7 +23,11 @@ import pandas as pd
 
 
 from src.scenario_config import ScenarioConfig
-
+from src.perception import simulate_pedestrian_perception
+from src.fcw import (
+    apply_warning_latency,
+    determine_warning_trigger,
+)
 
 
 # ---------------------------------------------------------------------
@@ -952,5 +956,60 @@ def generate_scenario_telemetry(
     telemetry["ground_truth_collision_risk"] = collision_risk
     telemetry["ground_truth_warning_required"] = warning_required
     telemetry["ground_truth_braking_required"] = braking_required
+
+        # -------------------------------------------------------------
+    # 10. Simulated ADAS perception
+    # -------------------------------------------------------------
+
+    random_state = np.random.default_rng()
+
+    pedestrian_detected, detection_confidence = (
+        simulate_pedestrian_perception(
+            visibility=scenario.visibility,
+            lighting=scenario.lighting,
+            weather=scenario.weather,
+            number_of_samples=number_of_samples,
+            random_state=random_state,
+        )
+    )
+
+    telemetry["pedestrian_detected"] = pedestrian_detected
+    telemetry["detection_confidence"] = detection_confidence
+
+        # Determine whether the pedestrian is inside the ego vehicle path.
+    pedestrian_in_path = (
+        np.abs(lateral_position) <= 1.0
+    )
+        # -------------------------------------------------------------
+    # 11. Instantaneous FCW decision
+    # -------------------------------------------------------------
+
+    instantaneous_warning = np.array(
+        [
+            determine_warning_trigger(
+                pedestrian_detected=detected,
+                pedestrian_in_path=in_path,
+                ttc_seconds=ttc,
+            )
+            for detected, in_path, ttc in zip(
+                pedestrian_detected,
+                pedestrian_in_path,
+                ttc_seconds,
+            )
+        ],
+        dtype=bool,
+    )
+
+    # -------------------------------------------------------------
+    # 12. Apply synthetic FCW latency
+    # -------------------------------------------------------------
+
+    warning_triggered = apply_warning_latency(
+        warning_signal=instantaneous_warning,
+        latency_seconds=0.2,
+        frequency_hz=frequency_hz,
+    )
+
+    telemetry["warning_triggered"] = warning_triggered
 
     return telemetry
