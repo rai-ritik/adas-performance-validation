@@ -518,3 +518,31 @@ def generate_pedestrian_longitudinal_position(
         )
 
     return longitudinal_position
+
+def calculate_pedestrian_distance(
+    lateral_position_m: np.ndarray,
+    longitudinal_position_m: np.ndarray,
+) -> np.ndarray:
+    """
+    Calculate geometric distance between the ego reference point
+    and the pedestrian using lateral and longitudinal position.
+
+    Distance is calculated using the Euclidean distance formula.
+    """
+
+    lateral_position_m = np.asarray(lateral_position_m, dtype=float)
+    longitudinal_position_m = np.asarray(
+        longitudinal_position_m,
+        dtype=float,
+    )
+
+    if lateral_position_m.shape != longitudinal_position_m.shape:
+        raise ValueError(
+            "Lateral and longitudinal position arrays "
+            "must have the same shape."
+        )
+
+    return np.sqrt(
+        lateral_position_m**2
+        + longitudinal_position_m**2
+    )
