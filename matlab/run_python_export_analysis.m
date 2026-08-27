@@ -1,0 +1,59 @@
+%% RUN_PYTHON_EXPORT_ANALYSIS
+% Analyze a CSV exported from the Python ADAS simulator.
+%
+% Expected columns include:
+% ttc_seconds
+% pedestrian_detected
+% pedestrian_in_path
+% warning_triggered
+% brake_triggered
+% ground_truth_warning_required
+% ground_truth_braking_required
+
+clear;
+clc;
+
+[file, path] = uigetfile("*.csv", "Select Python telemetry CSV");
+
+if isequal(file, 0)
+    error("No CSV selected.");
+end
+
+T = readtable(fullfile(path, file));
+
+required = { ...
+    "ttc_seconds", ...
+    "pedestrian_detected", ...
+    "pedestrian_in_path", ...
+    "warning_triggered", ...
+    "brake_triggered", ...
+    "ground_truth_warning_required", ...
+    "ground_truth_braking_required"};
+
+missing = setdiff(required, T.Properties.VariableNames);
+
+if ~isempty(missing)
+    error("Missing required columns: %s", strjoin(missing, ", "));
+end
+
+% Recalculate the AEB decision from the Python telemetry inputs.
+aeb_from_matlab = determine_aeb_trigger( ...
+    T.pedestrian_detected, ...
+    T.pedestrian_in_path, ...
+    T.ttc_seconds);
+
+comparison = table( ...
+    T.brake_triggered, ...
+    aeb_from_matlab, ...
+    T.ground_truth_braking_required, ...
+    'VariableNames', { ...
+        'Python_AEB', ...
+        'MATLAB_AEB', ...
+        'GroundTruth_AEB'});
+
+comparison.Match = comparison.Python_AEB == comparison.MATLAB_AEB;
+
+fprintf("MATLAB/Python AEB decision agreement: %.1f%%\n", ...
+    100 * mean(comparison.Match));
+
+disp(comparison(1:min(height(comparison), 20), :));

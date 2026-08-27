@@ -1,0 +1,15 @@
+To compare Python and MATLAB using real telemetry:
+
+1. Add this temporary export in your Python analysis script after telemetry generation:
+
+   telemetry.to_csv("results/P01_telemetry.csv", index=False)
+
+2. Run the Python scenario.
+
+3. Open MATLAB and run:
+   run_python_export_analysis
+
+4. Select:
+   results/P01_telemetry.csv
+
+The script recalculates the AEB decision in MATLAB from the same perception/path/TTC inputs and checks agreement with Python.
