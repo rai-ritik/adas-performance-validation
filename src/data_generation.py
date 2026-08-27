@@ -428,24 +428,23 @@ def generate_pedestrian_lateral_position(
 
     elif behavior == "safe_avoidance":
         entry_index = int(number_of_samples * 0.45)
-        avoidance_index = int(number_of_samples * 0.70)
+        avoidance_index = int(number_of_samples * 0.55)
 
         lateral_position[:entry_index] = start_position
 
         for i in range(entry_index, avoidance_index):
             lateral_position[i] = (
-                lateral_position[i - 1]
-                + pedestrian_speed * dt
+            lateral_position[i - 1]
+            + pedestrian_speed * dt
             )
 
-        # Move away from the ego path after reaching the
-        # avoidance point.
+    # Move away from the ego path before entering it.
         lateral_position[avoidance_index:] = np.linspace(
-            lateral_position[avoidance_index - 1],
-            2.5,
-            number_of_samples - avoidance_index,
+        lateral_position[avoidance_index - 1],
+        2.5,
+        number_of_samples - avoidance_index,
         )
-
+    
     else:
         raise ValueError(
             f"Unsupported pedestrian behavior: {behavior}"
@@ -546,3 +545,412 @@ def calculate_pedestrian_distance(
         lateral_position_m**2
         + longitudinal_position_m**2
     )
+
+def calculate_relative_closing_speed(
+    vehicle_speed_kmh: np.ndarray,
+    pedestrian_longitudinal_position_m: np.ndarray,
+    frequency_hz: float,
+) -> np.ndarray:
+    """
+    Calculate longitudinal relative closing speed.
+
+    Positive values indicate that the ego vehicle and pedestrian
+    are closing in the longitudinal direction.
+
+    Negative values indicate separation.
+    """
+
+    if frequency_hz <= 0:
+        raise ValueError("frequency_hz must be greater than zero.")
+
+    vehicle_speed_kmh = np.asarray(
+        vehicle_speed_kmh,
+        dtype=float,
+    )
+
+    pedestrian_longitudinal_position_m = np.asarray(
+        pedestrian_longitudinal_position_m,
+        dtype=float,
+    )
+
+    if vehicle_speed_kmh.shape != pedestrian_longitudinal_position_m.shape:
+        raise ValueError(
+            "Vehicle speed and pedestrian longitudinal position "
+            "arrays must have the same shape."
+        )
+
+    # Convert ego speed to m/s.
+    vehicle_speed_ms = vehicle_speed_kmh / 3.6
+
+    # Calculate pedestrian longitudinal velocity.
+    dt = 1.0 / frequency_hz
+
+    pedestrian_velocity_ms = np.gradient(
+        pedestrian_longitudinal_position_m,
+        dt,
+    )
+
+    # Positive = closing.
+    relative_closing_speed_ms = (
+        vehicle_speed_ms - pedestrian_velocity_ms
+    )
+
+    return relative_closing_speed_ms
+
+def calculate_ttc(
+    pedestrian_distance_m: np.ndarray,
+    relative_closing_speed_ms: np.ndarray,
+) -> np.ndarray:
+    """
+    Calculate simplified Time-to-Collision (TTC).
+
+    TTC is defined only when the ego vehicle is closing on
+    the pedestrian with a positive relative closing speed.
+    """
+
+    pedestrian_distance_m = np.asarray(
+        pedestrian_distance_m,
+        dtype=float,
+    )
+
+    relative_closing_speed_ms = np.asarray(
+        relative_closing_speed_ms,
+        dtype=float,
+    )
+
+    if pedestrian_distance_m.shape != relative_closing_speed_ms.shape:
+        raise ValueError(
+            "Distance and relative closing speed arrays "
+            "must have the same shape."
+        )
+
+    ttc_seconds = np.full(
+        pedestrian_distance_m.shape,
+        np.nan,
+        dtype=float,
+    )
+
+    closing = relative_closing_speed_ms > 0
+
+    ttc_seconds[closing] = (
+        pedestrian_distance_m[closing]
+        / relative_closing_speed_ms[closing]
+    )
+
+    return ttc_seconds
+
+def determine_collision_risk(
+    lateral_position_m: np.ndarray,
+    relative_closing_speed_ms: np.ndarray,
+    ttc_seconds: np.ndarray,
+    path_threshold_m: float = 1.0,
+    ttc_threshold_seconds: float = 3.0,
+) -> np.ndarray:
+    """
+    Determine synthetic ground-truth collision risk.
+
+    A collision risk exists when:
+    1. The pedestrian is inside the ego vehicle's path.
+    2. The ego vehicle is closing on the pedestrian.
+    3. TTC is at or below the project-defined threshold.
+
+    Thresholds are synthetic project assumptions.
+    """
+
+    lateral_position_m = np.asarray(
+        lateral_position_m,
+        dtype=float,
+    )
+
+    relative_closing_speed_ms = np.asarray(
+        relative_closing_speed_ms,
+        dtype=float,
+    )
+
+    ttc_seconds = np.asarray(
+        ttc_seconds,
+        dtype=float,
+    )
+
+    if not (
+        lateral_position_m.shape
+        == relative_closing_speed_ms.shape
+        == ttc_seconds.shape
+    ):
+        raise ValueError(
+            "Lateral position, relative closing speed, and TTC "
+            "arrays must have the same shape."
+        )
+
+    pedestrian_in_path = (
+        np.abs(lateral_position_m) <= path_threshold_m
+    )
+
+    vehicle_closing = relative_closing_speed_ms > 0
+
+    critical_ttc = (
+        np.isfinite(ttc_seconds)
+        & (ttc_seconds <= ttc_threshold_seconds)
+    )
+
+    collision_risk = (
+        pedestrian_in_path
+        & vehicle_closing
+        & critical_ttc
+    )
+
+    return collision_risk
+
+
+def determine_warning_required(
+    lateral_position_m: np.ndarray,
+    relative_closing_speed_ms: np.ndarray,
+    ttc_seconds: np.ndarray,
+    path_threshold_m: float = 1.0,
+    warning_ttc_threshold_seconds: float = 2.5,
+) -> np.ndarray:
+    """
+    Determine whether a warning is required according to
+    the project's synthetic ground-truth rules.
+
+    A warning is required when:
+    1. The pedestrian is inside the ego vehicle's path.
+    2. The ego vehicle is closing on the pedestrian.
+    3. TTC is at or below the project-defined warning threshold.
+
+    Thresholds are synthetic project assumptions.
+    """
+
+    lateral_position_m = np.asarray(
+        lateral_position_m,
+        dtype=float,
+    )
+
+    relative_closing_speed_ms = np.asarray(
+        relative_closing_speed_ms,
+        dtype=float,
+    )
+
+    ttc_seconds = np.asarray(
+        ttc_seconds,
+        dtype=float,
+    )
+
+    if not (
+        lateral_position_m.shape
+        == relative_closing_speed_ms.shape
+        == ttc_seconds.shape
+    ):
+        raise ValueError(
+            "Lateral position, relative closing speed, and TTC "
+            "arrays must have the same shape."
+        )
+
+    pedestrian_in_path = (
+        np.abs(lateral_position_m) <= path_threshold_m
+    )
+
+    vehicle_closing = relative_closing_speed_ms > 0
+
+    warning_ttc_reached = (
+        np.isfinite(ttc_seconds)
+        & (ttc_seconds <= warning_ttc_threshold_seconds)
+    )
+
+    warning_required = (
+        pedestrian_in_path
+        & vehicle_closing
+        & warning_ttc_reached
+    )
+
+    return warning_required
+
+def determine_braking_required(
+    lateral_position_m: np.ndarray,
+    relative_closing_speed_ms: np.ndarray,
+    ttc_seconds: np.ndarray,
+    path_threshold_m: float = 1.0,
+    braking_ttc_threshold_seconds: float = 1.5,
+) -> np.ndarray:
+    """
+    Determine whether AEB braking is required according to
+    the project's synthetic ground-truth rules.
+
+    Braking is required when:
+    1. The pedestrian is inside the ego vehicle's path.
+    2. The ego vehicle is closing on the pedestrian.
+    3. TTC is at or below the project-defined braking threshold.
+
+    Thresholds are synthetic project assumptions.
+    """
+
+    lateral_position_m = np.asarray(
+        lateral_position_m,
+        dtype=float,
+    )
+
+    relative_closing_speed_ms = np.asarray(
+        relative_closing_speed_ms,
+        dtype=float,
+    )
+
+    ttc_seconds = np.asarray(
+        ttc_seconds,
+        dtype=float,
+    )
+
+    if not (
+        lateral_position_m.shape
+        == relative_closing_speed_ms.shape
+        == ttc_seconds.shape
+    ):
+        raise ValueError(
+            "Lateral position, relative closing speed, and TTC "
+            "arrays must have the same shape."
+        )
+
+    pedestrian_in_path = (
+        np.abs(lateral_position_m) <= path_threshold_m
+    )
+
+    vehicle_closing = relative_closing_speed_ms > 0
+
+    braking_ttc_reached = (
+        np.isfinite(ttc_seconds)
+        & (ttc_seconds <= braking_ttc_threshold_seconds)
+    )
+
+    braking_required = (
+        pedestrian_in_path
+        & vehicle_closing
+        & braking_ttc_reached
+    )
+
+    return braking_required
+
+def generate_scenario_telemetry(
+    scenario: ScenarioConfig,
+    duration_seconds: float = DEFAULT_DURATION_SECONDS,
+    frequency_hz: float = DEFAULT_FREQUENCY_HZ,
+    start_time: datetime | None = None,
+) -> pd.DataFrame:
+    """
+    Generate the physical telemetry and ground-truth state
+    for one pedestrian-AEB scenario.
+
+    This function combines the previously implemented components.
+    ADAS perception, warning output, braking output, and failure
+    injection will be added in later stages.
+    """
+
+    # -------------------------------------------------------------
+    # 1. Ego vehicle motion
+    # -------------------------------------------------------------
+
+    vehicle_df = generate_vehicle_motion(
+        scenario=scenario,
+        duration_seconds=duration_seconds,
+        frequency_hz=frequency_hz,
+        start_time=start_time,
+    )
+
+    number_of_samples = len(vehicle_df)
+
+    # -------------------------------------------------------------
+    # 2. Pedestrian trajectory
+    # -------------------------------------------------------------
+
+    lateral_position = generate_pedestrian_lateral_position(
+        scenario=scenario,
+        number_of_samples=number_of_samples,
+        frequency_hz=frequency_hz,
+    )
+
+    longitudinal_position = generate_pedestrian_longitudinal_position(
+        scenario=scenario,
+        number_of_samples=number_of_samples,
+        frequency_hz=frequency_hz,
+    )
+
+    # -------------------------------------------------------------
+    # 3. Geometric distance
+    # -------------------------------------------------------------
+
+    pedestrian_distance = calculate_pedestrian_distance(
+        lateral_position_m=lateral_position,
+        longitudinal_position_m=longitudinal_position,
+    )
+
+    # -------------------------------------------------------------
+    # 4. Relative closing speed
+    # -------------------------------------------------------------
+
+    relative_closing_speed = calculate_relative_closing_speed(
+        vehicle_speed_kmh=vehicle_df[
+            "vehicle_speed_kmh"
+        ].to_numpy(),
+        pedestrian_longitudinal_position_m=longitudinal_position,
+        frequency_hz=frequency_hz,
+    )
+
+    # -------------------------------------------------------------
+    # 5. TTC
+    # -------------------------------------------------------------
+
+    ttc_seconds = calculate_ttc(
+        pedestrian_distance_m=pedestrian_distance,
+        relative_closing_speed_ms=relative_closing_speed,
+    )
+
+    # -------------------------------------------------------------
+    # 6. Ground-truth collision risk
+    # -------------------------------------------------------------
+
+    collision_risk = determine_collision_risk(
+        lateral_position_m=lateral_position,
+        relative_closing_speed_ms=relative_closing_speed,
+        ttc_seconds=ttc_seconds,
+    )
+
+    # -------------------------------------------------------------
+    # 7. Ground-truth warning requirement
+    # -------------------------------------------------------------
+
+    warning_required = determine_warning_required(
+        lateral_position_m=lateral_position,
+        relative_closing_speed_ms=relative_closing_speed,
+        ttc_seconds=ttc_seconds,
+    )
+
+    # -------------------------------------------------------------
+    # 8. Ground-truth braking requirement
+    # -------------------------------------------------------------
+
+    braking_required = determine_braking_required(
+        lateral_position_m=lateral_position,
+        relative_closing_speed_ms=relative_closing_speed,
+        ttc_seconds=ttc_seconds,
+    )
+
+    # -------------------------------------------------------------
+    # 9. Assemble final scenario dataframe
+    # -------------------------------------------------------------
+
+    telemetry = vehicle_df.copy()
+
+    telemetry["scenario_id"] = scenario.scenario_id
+
+    telemetry["pedestrian_lateral_position_m"] = lateral_position
+    telemetry["pedestrian_longitudinal_position_m"] = (
+        longitudinal_position
+    )
+    telemetry["pedestrian_distance_m"] = pedestrian_distance
+    telemetry["relative_closing_speed_ms"] = relative_closing_speed
+    telemetry["ttc_seconds"] = ttc_seconds
+
+    telemetry["ground_truth_pedestrian"] = True
+    telemetry["ground_truth_collision_risk"] = collision_risk
+    telemetry["ground_truth_warning_required"] = warning_required
+    telemetry["ground_truth_braking_required"] = braking_required
+
+    return telemetry
