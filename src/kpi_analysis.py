@@ -1,5 +1,5 @@
 """
-Scenario-level ADAS performance KPI analysis.
+Scenario and event-level ADAS performance KPI analysis.
 
 This module calculates engineering KPIs from simulated
 ADAS telemetry and independent ground-truth signals.
@@ -16,11 +16,58 @@ import pandas as pd
 from src.validation import calculate_binary_metrics
 
 
+# ============================================================
+# REQUIRED COLUMNS
+# ============================================================
+
+REQUIRED_COLUMNS = {
+    "scenario_id",
+    "timestamp",
+    "ttc_seconds",
+    "pedestrian_detected",
+    "warning_triggered",
+    "brake_triggered",
+    "ground_truth_warning_required",
+    "ground_truth_braking_required",
+}
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def _validate_telemetry(
+    telemetry: pd.DataFrame,
+) -> None:
+    """Validate the input telemetry dataframe."""
+
+    if telemetry.empty:
+        raise ValueError(
+            "Telemetry DataFrame cannot be empty."
+        )
+
+    missing_columns = (
+        REQUIRED_COLUMNS - set(telemetry.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Missing required telemetry columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+
+# ============================================================
+# SCENARIO-LEVEL KPIs
+# ============================================================
+
 def calculate_scenario_kpis(
     telemetry: pd.DataFrame,
 ) -> dict[str, float | int | str | bool]:
     """
     Calculate scenario-level ADAS performance KPIs.
+
+    These metrics operate on telemetry observations.
 
     Parameters
     ----------
@@ -34,48 +81,41 @@ def calculate_scenario_kpis(
         Scenario-level performance KPIs.
     """
 
-    # -------------------------------------------------------------
-    # 1. Validate required columns
-    # -------------------------------------------------------------
+    _validate_telemetry(telemetry)
 
-    required_columns = {
-        "scenario_id",
-        "ttc_seconds",
-        "pedestrian_detected",
-        "warning_triggered",
-        "brake_triggered",
-        "ground_truth_warning_required",
-        "ground_truth_braking_required",
-    }
-
-    missing_columns = required_columns - set(telemetry.columns)
-
-    if missing_columns:
-        raise ValueError(
-            f"Missing required telemetry columns: "
-            f"{sorted(missing_columns)}"
-        )
-
-    if telemetry.empty:
-        raise ValueError("Telemetry DataFrame cannot be empty.")
-
-    # -------------------------------------------------------------
-    # 2. Scenario identification
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # Scenario identification
+    # --------------------------------------------------------
 
     scenario_id = str(
         telemetry["scenario_id"].iloc[0]
     )
 
-    # -------------------------------------------------------------
-    # 3. Basic scenario KPIs
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # Basic KPIs
+    # --------------------------------------------------------
 
-    min_ttc = telemetry["ttc_seconds"].min()
+    valid_ttc = (
+        pd.to_numeric(
+            telemetry["ttc_seconds"],
+            errors="coerce",
+        )
+        .replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+        .dropna()
+    )
 
-    detection_rate = telemetry[
-        "pedestrian_detected"
-    ].mean()
+    min_ttc = (
+        valid_ttc.min()
+        if not valid_ttc.empty
+        else np.nan
+    )
+
+    detection_rate = float(
+        telemetry["pedestrian_detected"].mean()
+    )
 
     warning_count = int(
         telemetry["warning_triggered"].sum()
@@ -85,67 +125,87 @@ def calculate_scenario_kpis(
         telemetry["brake_triggered"].sum()
     )
 
-    # -------------------------------------------------------------
-    # 4. Ground-truth event exposure
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # Ground-truth exposure
+    # --------------------------------------------------------
 
-    gt_warning_events = int(
+    ground_truth_warning = (
         telemetry[
             "ground_truth_warning_required"
-        ].sum()
+        ].to_numpy(dtype=bool)
+    )
+
+    predicted_warning = (
+        telemetry[
+            "warning_triggered"
+        ].to_numpy(dtype=bool)
+    )
+
+    ground_truth_aeb = (
+        telemetry[
+            "ground_truth_braking_required"
+        ].to_numpy(dtype=bool)
+    )
+
+    predicted_aeb = (
+        telemetry[
+            "brake_triggered"
+        ].to_numpy(dtype=bool)
+    )
+
+    gt_warning_events = int(
+        ground_truth_warning.sum()
     )
 
     gt_braking_events = int(
-        telemetry[
-            "ground_truth_braking_required"
-        ].sum()
+        ground_truth_aeb.sum()
     )
 
-    fcw_exercised = gt_warning_events > 0
+    fcw_exercised = (
+        gt_warning_events > 0
+    )
 
-    aeb_exercised = gt_braking_events > 0
+    aeb_exercised = (
+        gt_braking_events > 0
+    )
 
-    # -------------------------------------------------------------
-    # 5. FCW validation
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # FCW metrics
+    # --------------------------------------------------------
 
-    ground_truth_fcw = telemetry[
-        "ground_truth_warning_required"
-    ].to_numpy(dtype=bool)
-
-    predicted_fcw = telemetry[
-        "warning_triggered"
-    ].to_numpy(dtype=bool)
-
-    fcw_true_positive = int(
+    fcw_tp = int(
         np.sum(
-            ground_truth_fcw & predicted_fcw
+            ground_truth_warning
+            & predicted_warning
         )
     )
 
-    fcw_false_positive = int(
+    fcw_tn = int(
         np.sum(
-            ~ground_truth_fcw & predicted_fcw
+            ~ground_truth_warning
+            & ~predicted_warning
         )
     )
 
-    fcw_false_negative = int(
+    fcw_fp = int(
         np.sum(
-            ground_truth_fcw & ~predicted_fcw
+            ~ground_truth_warning
+            & predicted_warning
         )
     )
 
-    fcw_true_negative = int(
+    fcw_fn = int(
         np.sum(
-            ~ground_truth_fcw & ~predicted_fcw
+            ground_truth_warning
+            & ~predicted_warning
         )
     )
 
     if fcw_exercised:
 
         fcw_metrics = calculate_binary_metrics(
-            ground_truth_fcw,
-            predicted_fcw,
+            ground_truth_warning,
+            predicted_warning,
         )
 
         fcw_precision = fcw_metrics["precision"]
@@ -158,39 +218,35 @@ def calculate_scenario_kpis(
         fcw_recall = np.nan
         fcw_f1 = np.nan
 
-    # -------------------------------------------------------------
-    # 6. AEB validation
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # AEB metrics
+    # --------------------------------------------------------
 
-    ground_truth_aeb = telemetry[
-        "ground_truth_braking_required"
-    ].to_numpy(dtype=bool)
-
-    predicted_aeb = telemetry[
-        "brake_triggered"
-    ].to_numpy(dtype=bool)
-
-    aeb_true_positive = int(
+    aeb_tp = int(
         np.sum(
-            ground_truth_aeb & predicted_aeb
+            ground_truth_aeb
+            & predicted_aeb
         )
     )
 
-    aeb_false_positive = int(
+    aeb_tn = int(
         np.sum(
-            ~ground_truth_aeb & predicted_aeb
+            ~ground_truth_aeb
+            & ~predicted_aeb
         )
     )
 
-    aeb_false_negative = int(
+    aeb_fp = int(
         np.sum(
-            ground_truth_aeb & ~predicted_aeb
+            ~ground_truth_aeb
+            & predicted_aeb
         )
     )
 
-    aeb_true_negative = int(
+    aeb_fn = int(
         np.sum(
-            ~ground_truth_aeb & ~predicted_aeb
+            ground_truth_aeb
+            & ~predicted_aeb
         )
     )
 
@@ -211,23 +267,14 @@ def calculate_scenario_kpis(
         aeb_recall = np.nan
         aeb_f1 = np.nan
 
-    # -------------------------------------------------------------
-    # 7. Timing KPIs
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # First FCW trigger
+    # --------------------------------------------------------
 
     fcw_indices = np.flatnonzero(
-        telemetry[
-            "warning_triggered"
-        ].to_numpy(dtype=bool)
+        predicted_warning
     )
 
-    aeb_indices = np.flatnonzero(
-        telemetry[
-            "brake_triggered"
-        ].to_numpy(dtype=bool)
-    )
-
-    # First FCW TTC
     if len(fcw_indices) > 0:
 
         first_fcw_index = fcw_indices[0]
@@ -240,7 +287,14 @@ def calculate_scenario_kpis(
 
         first_fcw_ttc = np.nan
 
-    # First AEB TTC
+    # --------------------------------------------------------
+    # First AEB trigger
+    # --------------------------------------------------------
+
+    aeb_indices = np.flatnonzero(
+        predicted_aeb
+    )
+
     if len(aeb_indices) > 0:
 
         first_aeb_index = aeb_indices[0]
@@ -253,68 +307,364 @@ def calculate_scenario_kpis(
 
         first_aeb_ttc = np.nan
 
-    # -------------------------------------------------------------
-    # 8. Return KPI summary
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # Return
+    # --------------------------------------------------------
 
     return {
-        # Scenario
+
         "scenario_id": scenario_id,
 
-        # Basic metrics
         "min_ttc_s": (
             float(min_ttc)
-            if np.isfinite(min_ttc)
+            if pd.notna(min_ttc)
             else np.nan
         ),
 
-        "detection_rate": float(
-            detection_rate
-        ),
+        "detection_rate": detection_rate,
 
-        # Ground-truth exposure
         "gt_warning_events": gt_warning_events,
         "gt_braking_events": gt_braking_events,
 
         "fcw_exercised": fcw_exercised,
         "aeb_exercised": aeb_exercised,
 
-        # ADAS output counts
         "warning_count": warning_count,
         "brake_count": brake_count,
 
-        # FCW confusion matrix
-        "fcw_tp": fcw_true_positive,
-        "fcw_tn": fcw_true_negative,
-        "fcw_fp": fcw_false_positive,
-        "fcw_fn": fcw_false_negative,
+        "fcw_tp": fcw_tp,
+        "fcw_tn": fcw_tn,
+        "fcw_fp": fcw_fp,
+        "fcw_fn": fcw_fn,
 
-        # FCW metrics
         "fcw_precision": fcw_precision,
         "fcw_recall": fcw_recall,
         "fcw_f1": fcw_f1,
 
-        # AEB confusion matrix
-        "aeb_tp": aeb_true_positive,
-        "aeb_tn": aeb_true_negative,
-        "aeb_fp": aeb_false_positive,
-        "aeb_fn": aeb_false_negative,
+        "aeb_tp": aeb_tp,
+        "aeb_tn": aeb_tn,
+        "aeb_fp": aeb_fp,
+        "aeb_fn": aeb_fn,
 
-        # AEB metrics
         "aeb_precision": aeb_precision,
         "aeb_recall": aeb_recall,
         "aeb_f1": aeb_f1,
 
-        # Timing
         "first_fcw_ttc_s": (
             float(first_fcw_ttc)
-            if np.isfinite(first_fcw_ttc)
+            if pd.notna(first_fcw_ttc)
             else np.nan
         ),
 
         "first_aeb_ttc_s": (
             float(first_aeb_ttc)
-            if np.isfinite(first_aeb_ttc)
+            if pd.notna(first_aeb_ttc)
             else np.nan
         ),
     }
+
+
+# ============================================================
+# EVENT DETECTION
+# ============================================================
+
+def _find_event_start_indices(
+    series: pd.Series,
+) -> np.ndarray:
+    """
+    Find the first sample of every TRUE event.
+
+    Example:
+
+        False False True True True False True True
+
+    becomes:
+
+        index 2 and index 6
+
+    This prevents one continuous braking event from being
+    counted as multiple events.
+    """
+
+    values = series.to_numpy(
+        dtype=bool
+    )
+
+    starts = (
+        values
+        & ~np.concatenate(
+            [
+                np.array([False]),
+                values[:-1],
+            ]
+        )
+    )
+
+    return np.flatnonzero(starts)
+
+
+# ============================================================
+# EVENT-LEVEL AEB ANALYSIS
+# ============================================================
+
+def calculate_aeb_event_kpi(
+    telemetry: pd.DataFrame,
+) -> dict[str, object]:
+    """
+    Calculate event-level AEB performance.
+
+    Unlike the scenario-level confusion matrix, this function
+    treats a continuous braking requirement as ONE event.
+
+    Returns
+    -------
+    dict
+        Event-level AEB performance summary.
+    """
+
+    _validate_telemetry(telemetry)
+
+    data = telemetry.copy()
+
+    data = data.sort_values(
+        "timestamp"
+    ).reset_index(drop=True)
+
+    # --------------------------------------------------------
+    # Ground-truth event
+    # --------------------------------------------------------
+
+    gt_event_indices = (
+        _find_event_start_indices(
+            data[
+                "ground_truth_braking_required"
+            ]
+        )
+    )
+
+    # --------------------------------------------------------
+    # Actual AEB events
+    # --------------------------------------------------------
+
+    aeb_event_indices = (
+        _find_event_start_indices(
+            data[
+                "brake_triggered"
+            ]
+        )
+    )
+
+    # --------------------------------------------------------
+    # No AEB requirement
+    # --------------------------------------------------------
+
+    if len(gt_event_indices) == 0:
+
+        return {
+            "scenario_id": str(
+                data["scenario_id"].iloc[0]
+            ),
+
+            "aeb_required": False,
+            "aeb_triggered": (
+                len(aeb_event_indices) > 0
+            ),
+
+            "aeb_event_count": 0,
+
+            "result": (
+                "N/A — AEB not exercised"
+            ),
+
+            "failure_type": None,
+
+            "critical_ttc_s": np.nan,
+
+            "ttc_at_aeb_s": np.nan,
+
+            "detection_at_critical": None,
+
+            "confidence_at_critical": np.nan,
+        }
+
+    # --------------------------------------------------------
+    # Critical ground-truth event
+    # --------------------------------------------------------
+
+    critical_index = gt_event_indices[0]
+
+    critical_row = data.iloc[
+        critical_index
+    ]
+
+    critical_ttc = critical_row[
+        "ttc_seconds"
+    ]
+
+    detection_at_critical = bool(
+        critical_row[
+            "pedestrian_detected"
+        ]
+    )
+
+    confidence_at_critical = (
+        critical_row[
+            "detection_confidence"
+        ]
+        if "detection_confidence"
+        in data.columns
+        else np.nan
+    )
+
+    # --------------------------------------------------------
+    # Find first AEB event
+    # --------------------------------------------------------
+
+    if len(aeb_event_indices) > 0:
+
+        first_aeb_index = (
+            aeb_event_indices[0]
+        )
+
+        aeb_row = data.iloc[
+            first_aeb_index
+        ]
+
+        ttc_at_aeb = aeb_row[
+            "ttc_seconds"
+        ]
+
+        aeb_triggered = True
+
+    else:
+
+        first_aeb_index = None
+
+        ttc_at_aeb = np.nan
+
+        aeb_triggered = False
+
+    # --------------------------------------------------------
+    # Event classification
+    # --------------------------------------------------------
+
+    if aeb_triggered:
+
+        result = "PASS"
+        failure_type = None
+
+    else:
+
+        result = "FAIL"
+
+        if not detection_at_critical:
+
+            failure_type = (
+                "PERCEPTION — target not detected"
+            )
+
+        elif (
+            pd.notna(
+                confidence_at_critical
+            )
+            and confidence_at_critical < 0.5
+        ):
+
+            failure_type = (
+                "PERCEPTION — low confidence"
+            )
+
+        else:
+
+            failure_type = (
+                "DECISION — AEB did not trigger"
+            )
+
+    # --------------------------------------------------------
+    # Return
+    # --------------------------------------------------------
+
+    return {
+
+        "scenario_id": str(
+            data["scenario_id"].iloc[0]
+        ),
+
+        "aeb_required": True,
+
+        "aeb_triggered": aeb_triggered,
+
+        "aeb_event_count": (
+            len(aeb_event_indices)
+        ),
+
+        "result": result,
+
+        "failure_type": failure_type,
+
+        "critical_ttc_s": (
+            float(critical_ttc)
+            if pd.notna(critical_ttc)
+            else np.nan
+        ),
+
+        "ttc_at_aeb_s": (
+            float(ttc_at_aeb)
+            if pd.notna(ttc_at_aeb)
+            else np.nan
+        ),
+
+        "detection_at_critical": (
+            detection_at_critical
+        ),
+
+        "confidence_at_critical": (
+            float(
+                confidence_at_critical
+            )
+            if pd.notna(
+                confidence_at_critical
+            )
+            else np.nan
+        ),
+    }
+
+
+# ============================================================
+# ALL-SCENARIO EVENT ANALYSIS
+# ============================================================
+
+def calculate_all_aeb_event_kpis(
+    telemetry: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Calculate one AEB event-level result per scenario.
+
+    Parameters
+    ----------
+    telemetry:
+        Combined telemetry containing multiple scenarios.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per scenario.
+    """
+
+    _validate_telemetry(telemetry)
+
+    results = []
+
+    for scenario_id, group in telemetry.groupby(
+        "scenario_id"
+    ):
+
+        result = calculate_aeb_event_kpi(
+            group
+        )
+
+        results.append(result)
+
+    return pd.DataFrame(
+        results
+    )
